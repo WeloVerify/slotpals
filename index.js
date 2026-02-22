@@ -6,67 +6,99 @@ const bot = new Telegraf(process.env.BOT_TOKEN)
 const app = express()
 app.use(express.json())
 
+// ENV
 const WEBHOOK_PATH = process.env.WEBHOOK_PATH || "/telegram/webhook"
 const CASINO_URL = process.env.CASINO_URL || "https://8spin.com"
 const SUPPORT_URL = process.env.SUPPORT_URL || "https://8spin.com"
+const ALERT_TIMEZONE = process.env.ALERT_TIMEZONE || "Europe/Rome"
+const REMINDERS_ENABLED = (process.env.REMINDERS_ENABLED || "true").toLowerCase() === "true"
 
-// 🔔 Dove inviare i messaggi automatici (consigliato: canale)
-const ALERT_CHAT_ID = process.env.ALERT_CHAT_ID || "" // es: @yourchannel OR -1001234567890
-const ALERT_TIMEZONE = process.env.ALERT_TIMEZONE || "Europe/Rome" // cambia se vuoi
+// ⚠️ Subscribers in-memory (chi fa /start). Su riavvio/redeploy può resettarsi.
+const subscribers = new Set()
 
-// ✅ Banner pubblici (i tuoi link)
-const PROMO_IMAGES = [
-  "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dc8a929099d7bc16d8_Frame%202147224851.png",
-  "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dce940b2742d8b175e_Frame%202147224852.png",
-  "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9ddb11b6cfb66af44ff_Frame%202147224853.png",
-  "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dc875e0cfad9cffe83_Frame%202147224834.png",
-  "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dc0d32b32837f20197_Frame%202147224839.png",
-  "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dce4ea29439feea0a3_Frame%202147224840.png"
+const PROMOS = [
+  {
+    image:
+      "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dc8a929099d7bc16d8_Frame%202147224851.png",
+    caption:
+      "*💰 Deposit Bonus*\n*100% up to $1,000 + 200 FS*\n_First deposit_\n\nBoost your first top-up with extra cash + free spins. Tap below to claim 👇",
+  },
+  {
+    image:
+      "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dce940b2742d8b175e_Frame%202147224852.png",
+    caption:
+      "*💰 Deposit Bonus*\n*50% up to $200*\n_Second deposit_\n\nReload and keep the momentum going with an extra boost. Tap below 👇",
+  },
+  {
+    image:
+      "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9ddb11b6cfb66af44ff_Frame%202147224853.png",
+    caption:
+      "*💰 Deposit Bonus*\n*75% up to $300*\n_Third deposit_\n\nBigger boost on your third deposit — more balance, more play. Tap below 👇",
+  },
+  {
+    image:
+      "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dc875e0cfad9cffe83_Frame%202147224834.png",
+    caption:
+      "*⚡ Reload Bonus*\n*40% up to $80 + 10 FS*\n_Every Monday_\n\nMonday reload is live — grab it before the day ends. Tap below 👇",
+  },
+  {
+    image:
+      "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dc0d32b32837f20197_Frame%202147224839.png",
+    caption:
+      "*⚡ Reload Bonus*\n*50% up to $100 + 15 FS*\n_Every Wednesday_\n\nMidweek boost + extra free spins. Tap below to claim 👇",
+  },
+  {
+    image:
+      "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ad9dce4ea29439feea0a3_Frame%202147224840.png",
+    caption:
+      "*⚡ Reload Bonus*\n*60% up to €240 + 20 FS*\n_Every Friday_\n\nFriday reload hits harder — big boost + free spins. Tap below 👇",
+  },
 ]
 
-const PROMOS_TEXT =
-  "🎁 Current Promotions\n" +
-  "• 100% up to $1,000 + 200 FS (First deposit)\n" +
-  "• 50% up to $200 (Second deposit)\n" +
-  "• 75% up to $300 (Third deposit)\n\n" +
-  "⚡ Reload Bonuses\n" +
-  "• Monday: 40% up to $80 + 10 FS\n" +
-  "• Wednesday: 50% up to $100 + 15 FS\n" +
-  "• Friday: 60% up to €240 + 20 FS\n\n" +
-  "Offers may be time-limited. Check the website for full details."
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function mainMenu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🎁 Promotions", "PROMOS")],
     [Markup.button.url("🌐 Open 8Spin", CASINO_URL)],
-    [Markup.button.url("🧑‍💻 Support", SUPPORT_URL)]
+    [Markup.button.url("🧑‍💻 Support", SUPPORT_URL)],
   ])
 }
 
+function registerSubscriber(chatId) {
+  if (typeof chatId === "number") subscribers.add(chatId)
+}
+
 async function sendPromos(ctx) {
-  await ctx.reply(
-    PROMOS_TEXT,
+  await ctx.replyWithMarkdown(
+    "🎁 *Current promotions* — pick your bonus below 👇",
     Markup.inlineKeyboard([
       [Markup.button.url("Play now", CASINO_URL)],
-      [Markup.button.url("Support", SUPPORT_URL)]
+      [Markup.button.url("Support", SUPPORT_URL)],
     ])
   )
 
-  // Album immagini (max 10, qui 6)
-  const media = PROMO_IMAGES.slice(0, 10).map((url) => ({ type: "photo", media: url }))
-  try {
-    await ctx.replyWithMediaGroup(media)
-  } catch (e) {
-    await ctx.reply("I couldn’t load promo images. (Image URLs must be public direct links.)")
+  for (const p of PROMOS) {
+    await ctx.replyWithPhoto(p.image, {
+      caption: p.caption,
+      parse_mode: "Markdown",
+      ...Markup.inlineKeyboard([
+        [Markup.button.url("Play now", CASINO_URL)],
+        [Markup.button.url("Support", SUPPORT_URL)],
+      ]),
+    })
+    await sleep(250)
   }
 }
 
-// Commands
+// COMMANDS
 bot.start(async (ctx) => {
-  await ctx.reply("Welcome to 8Spin 🤝 Choose an option:", mainMenu())
+  registerSubscriber(ctx.chat.id)
+  await ctx.reply("Welcome to 8Spin 🤝\nChoose an option:", mainMenu())
 })
 
 bot.command("promos", async (ctx) => sendPromos(ctx))
+
 bot.action("PROMOS", async (ctx) => {
   await ctx.answerCbQuery()
   await sendPromos(ctx)
@@ -84,30 +116,55 @@ bot.command("support", async (ctx) => {
   await ctx.reply("Support 👇", Markup.inlineKeyboard([[Markup.button.url("Contact support", SUPPORT_URL)]]))
 })
 
-// 🔥 Scheduled Reload messages (to channel/group)
+// (Opzionale) gestisci opt-out reminders
+bot.command("alerts", async (ctx) => {
+  const chatId = ctx.chat.id
+  const parts = (ctx.message?.text || "").trim().split(/\s+/)
+  const action = (parts[1] || "status").toLowerCase()
+
+  if (action === "off") {
+    subscribers.delete(chatId)
+    return ctx.reply("🛑 Alerts disabled. You can re-enable anytime with /alerts on.")
+  }
+  if (action === "on") {
+    registerSubscriber(chatId)
+    return ctx.reply("✅ Alerts enabled. I’ll remind you on Reload Bonus days.")
+  }
+
+  return ctx.reply(subscribers.has(chatId) ? "✅ Alerts are ON." : "🛑 Alerts are OFF. Use /alerts on to enable.")
+})
+
+// REMINDERS (DM a tutti gli utenti registrati)
 async function sendReloadReminder(kind) {
-  if (!ALERT_CHAT_ID) return
+  if (!REMINDERS_ENABLED) return
+  if (!subscribers.size) return
 
   const map = {
-    monday:    "🚀 Reload Bonus is LIVE today (Monday)\n40% up to $80 + 10 FS\n\nTap below to claim 👇",
+    monday: "🚀 Reload Bonus is LIVE today (Monday)\n40% up to $80 + 10 FS\n\nTap below to claim 👇",
     wednesday: "🚀 Reload Bonus is LIVE today (Wednesday)\n50% up to $100 + 15 FS\n\nTap below to claim 👇",
-    friday:    "🚀 Reload Bonus is LIVE today (Friday)\n60% up to €240 + 20 FS\n\nTap below to claim 👇"
+    friday: "🚀 Reload Bonus is LIVE today (Friday)\n60% up to €240 + 20 FS\n\nTap below to claim 👇",
   }
 
   const text = map[kind]
-  await bot.telegram.sendMessage(
-    ALERT_CHAT_ID,
-    text,
-    Markup.inlineKeyboard([[Markup.button.url("Open 8Spin", CASINO_URL)]]).reply_markup
-  )
+  const reply_markup = Markup.inlineKeyboard([[Markup.button.url("Open 8Spin", CASINO_URL)]]).reply_markup
+
+  for (const chatId of [...subscribers]) {
+    try {
+      await bot.telegram.sendMessage(chatId, text, { reply_markup })
+      await sleep(120)
+    } catch {
+      // se l’utente blocca il bot / chat non valida, lo rimuoviamo
+      subscribers.delete(chatId)
+    }
+  }
 }
 
-// Orario: 10:00 Europe/Rome (modificalo se vuoi)
-cron.schedule("0 10 * * 1", () => sendReloadReminder("monday"),    { timezone: ALERT_TIMEZONE })
+// Orario: 10:00 (Europe/Rome). Cambia l’ora modificando "0 10 ..."
+cron.schedule("0 10 * * 1", () => sendReloadReminder("monday"), { timezone: ALERT_TIMEZONE })
 cron.schedule("0 10 * * 3", () => sendReloadReminder("wednesday"), { timezone: ALERT_TIMEZONE })
-cron.schedule("0 10 * * 5", () => sendReloadReminder("friday"),    { timezone: ALERT_TIMEZONE })
+cron.schedule("0 10 * * 5", () => sendReloadReminder("friday"), { timezone: ALERT_TIMEZONE })
 
-// Healthcheck + webhook
+// HEALTHCHECK + WEBHOOK
 app.get("/", (_, res) => res.send("OK"))
 app.post(WEBHOOK_PATH, (req, res) => bot.handleUpdate(req.body, res))
 
