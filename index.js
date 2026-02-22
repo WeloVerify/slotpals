@@ -21,9 +21,10 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.warn("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. DB tracking will fail.")
 }
 
-const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-  : null
+const supabase =
+  SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    : null
 
 // Follow-up (10 minutes after /start, ONLY if user did NOT click Play Now)
 const FOLLOWUP_IMAGE =
@@ -99,10 +100,9 @@ async function track(chatId, event, meta = {}) {
 async function upsertUser(chatId) {
   if (!supabase || typeof chatId !== "number") return
   try {
-    await supabase.from("tg_users").upsert(
-      { chat_id: chatId, last_seen_at: new Date().toISOString(), subscribed: true },
-      { onConflict: "chat_id" }
-    )
+    await supabase
+      .from("tg_users")
+      .upsert({ chat_id: chatId, last_seen_at: new Date().toISOString(), subscribed: true }, { onConflict: "chat_id" })
   } catch {}
 }
 
@@ -132,10 +132,7 @@ function mainMenu() {
 }
 
 async function sendCasinoLink(ctx, introHtml = "<b>Open 8Spin</b> 👇") {
-  await ctx.replyWithHTML(
-    introHtml,
-    Markup.inlineKeyboard([[Markup.button.url("Open 8Spin", CASINO_URL)]])
-  )
+  await ctx.replyWithHTML(introHtml, Markup.inlineKeyboard([[Markup.button.url("Open 8Spin", CASINO_URL)]]))
 }
 
 async function sendPromos(ctx) {
@@ -236,10 +233,7 @@ bot.command("support", async (ctx) => {
   const chatId = ctx.chat.id
   await upsertUser(chatId)
   await track(chatId, "support_click", { source: "command" })
-  await ctx.replyWithHTML(
-    "<b>Support</b> 👇",
-    Markup.inlineKeyboard([[Markup.button.url("Contact support", SUPPORT_URL)]])
-  )
+  await ctx.replyWithHTML("<b>Support</b> 👇", Markup.inlineKeyboard([[Markup.button.url("Contact support", SUPPORT_URL)]]))
 })
 
 // CALLBACKS
@@ -262,18 +256,16 @@ bot.action("OPEN_SUPPORT", async (ctx) => {
   const chatId = ctx.chat.id
   await upsertUser(chatId)
   await track(chatId, "support_click", { source: "callback" })
-  await ctx.replyWithHTML(
-    "<b>Need help?</b> Tap below 👇",
-    Markup.inlineKeyboard([[Markup.button.url("Support", SUPPORT_URL)]])
-  )
+  await ctx.replyWithHTML("<b>Need help?</b> Tap below 👇", Markup.inlineKeyboard([[Markup.button.url("Support", SUPPORT_URL)]]))
 })
 
-// RELOAD REMINDERS (a tutti gli utenti subscribed=true)
+// Helpers for DB list users subscribed
 async function fetchSubscribedChatIds() {
   if (!supabase) return []
   const out = []
   let from = 0
   const page = 1000
+
   while (true) {
     const { data, error } = await supabase
       .from("tg_users")
@@ -287,9 +279,11 @@ async function fetchSubscribedChatIds() {
     if (data.length < page) break
     from += page
   }
+
   return out
 }
 
+// RELOAD REMINDERS
 async function sendReloadReminder(kind) {
   if (!REMINDERS_ENABLED) return
   const ids = await fetchSubscribedChatIds()
@@ -341,16 +335,14 @@ app.get("/admin/stats", async (req, res) => {
 
     const payload = { totalUsers: totalUsers || 0, activeUsersLast24h: active24h, eventsLast7d: byEvent7d }
 
-    if (req.query.pretty === "1") {
-      return res.status(200).type("application/json").send(JSON.stringify(payload, null, 2))
-    }
+    if (req.query.pretty === "1") return res.status(200).type("application/json").send(JSON.stringify(payload, null, 2))
     return res.json(payload)
   } catch {
     return res.status(500).json({ error: "stats_failed" })
   }
 })
 
-// ADMIN: lista ultimi broadcast
+// ADMIN: ultimi broadcast
 app.get("/admin/broadcasts", async (req, res) => {
   if (!ADMIN_TOKEN || req.query.token !== ADMIN_TOKEN) return res.status(401).json({ error: "unauthorized" })
   if (!supabase) return res.status(500).json({ error: "supabase_not_configured" })
@@ -358,13 +350,14 @@ app.get("/admin/broadcasts", async (req, res) => {
   res.json({ broadcasts: data || [] })
 })
 
-// ADMIN: invio broadcast a tutti subscribed=true
+// ADMIN: broadcast (NON aggiunge pulsanti se non li metti)
 app.post("/admin/broadcast", async (req, res) => {
   if (!ADMIN_TOKEN || req.query.token !== ADMIN_TOKEN) return res.status(401).json({ error: "unauthorized" })
   if (!supabase) return res.status(500).json({ error: "supabase_not_configured" })
 
   const message_html = clampText(req.body?.message_html || "", 3500)
   const image_url = (req.body?.image_url || "").trim()
+
   const button1_text = clampText(req.body?.button1_text || "", 32)
   const button1_url = (req.body?.button1_url || "").trim()
   const button2_text = clampText(req.body?.button2_text || "", 32)
@@ -375,19 +368,25 @@ app.post("/admin/broadcast", async (req, res) => {
   if (button1_url && !isHttpsUrl(button1_url)) return res.status(400).json({ error: "button1_url_must_be_https" })
   if (button2_url && !isHttpsUrl(button2_url)) return res.status(400).json({ error: "button2_url_must_be_https" })
 
-  let keyboard = []
+  const keyboard = []
   if (button1_text && button1_url) keyboard.push([Markup.button.url(button1_text, button1_url)])
   if (button2_text && button2_url) keyboard.push([Markup.button.url(button2_text, button2_url)])
-  if (!keyboard.length) keyboard = [[Markup.button.url("Open 8Spin", CASINO_URL)]]
 
-  const reply_markup = Markup.inlineKeyboard(keyboard).reply_markup
+  const reply_markup = keyboard.length ? Markup.inlineKeyboard(keyboard).reply_markup : undefined
 
-  // salva broadcast prima
-  const { data: row } = await supabase.from("tg_broadcasts").insert({
-    message_html, image_url: image_url || null,
-    button1_text: button1_text || null, button1_url: button1_url || null,
-    button2_text: button2_text || null, button2_url: button2_url || null,
-  }).select("*").single()
+  // salva broadcast
+  const { data: row } = await supabase
+    .from("tg_broadcasts")
+    .insert({
+      message_html,
+      image_url: image_url || null,
+      button1_text: button1_text || null,
+      button1_url: button1_url || null,
+      button2_text: button2_text || null,
+      button2_url: button2_url || null,
+    })
+    .select("*")
+    .single()
 
   const ids = await fetchSubscribedChatIds()
   let sent = 0
@@ -396,9 +395,16 @@ app.post("/admin/broadcast", async (req, res) => {
   for (const chatId of ids) {
     try {
       if (image_url) {
-        await bot.telegram.sendPhoto(chatId, image_url, { caption: message_html, parse_mode: "HTML", reply_markup })
+        await bot.telegram.sendPhoto(chatId, image_url, {
+          caption: message_html,
+          parse_mode: "HTML",
+          reply_markup,
+        })
       } else {
-        await bot.telegram.sendMessage(chatId, message_html, { parse_mode: "HTML", reply_markup })
+        await bot.telegram.sendMessage(chatId, message_html, {
+          parse_mode: "HTML",
+          reply_markup,
+        })
       }
       sent++
       await track(chatId, "broadcast_sent", { broadcast_id: row?.id || null })
@@ -417,46 +423,103 @@ app.post("/admin/broadcast", async (req, res) => {
   res.json({ ok: true, sent, fail, total: ids.length, broadcast_id: row?.id || null })
 })
 
-// ADMIN UI (dashboard + form broadcast)
+// ADMIN UI (bianco, minimal, italiano)
 app.get("/admin", async (req, res) => {
   if (!ADMIN_TOKEN || req.query.token !== ADMIN_TOKEN) return res.status(401).send("unauthorized")
 
   const token = String(req.query.token || "")
   return res.type("html").send(`<!doctype html>
-<html lang="en">
+<html lang="it">
 <head>
-<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>Slotpals Admin</title>
 <style>
-:root{--bg:#0b1220;--card:#0f1a2e;--muted:#93a4c7;--text:#eaf0ff;--border:rgba(255,255,255,.10);--accent:#6ea8fe}
+:root{
+  --bg:#ffffff;
+  --card:#ffffff;
+  --text:#0b0f19;
+  --muted:#667085;
+  --border:rgba(16,24,40,.12);
+  --shadow:0 1px 2px rgba(16,24,40,.06), 0 6px 18px rgba(16,24,40,.06);
+  --accent:#111827;
+  --ok:#12b76a;
+  --err:#f04438;
+}
 *{box-sizing:border-box;font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
-body{margin:0;background:radial-gradient(900px 500px at 20% 0%, rgba(110,168,254,.18), transparent 55%), var(--bg);color:var(--text)}
-.wrap{max-width:1040px;margin:26px auto;padding:0 16px}
-.top{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px}
-h1{margin:0;font-size:18px;font-weight:900}
-.sub{color:var(--muted);font-size:12px;margin-top:6px}
-.btn{border:1px solid var(--border);background:rgba(255,255,255,.04);color:var(--text);padding:10px 12px;border-radius:12px;cursor:pointer}
-.btn:hover{border-color:rgba(110,168,254,.35)}
-.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:12px 0 14px}
-.card{background:linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,.02));border:1px solid var(--border);border-radius:16px;padding:14px}
-.label{color:var(--muted);font-size:12px}
-.value{font-size:26px;font-weight:900;margin-top:6px}
-.row{display:grid;grid-template-columns:1.2fr .8fr;gap:12px}
-.panel{border:1px solid var(--border);border-radius:16px;background:rgba(255,255,255,.02);overflow:hidden}
-.panel h2{margin:0;padding:12px 14px;font-size:13px;color:var(--muted);border-bottom:1px solid var(--border);background:rgba(255,255,255,.03)}
-.panel .in{padding:12px 14px}
+body{margin:0;background:var(--bg);color:var(--text)}
+.wrap{max-width:1100px;margin:28px auto;padding:0 18px}
+.top{
+  display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px
+}
+h1{margin:0;font-size:16px;font-weight:800;letter-spacing:-.2px}
+.sub{margin-top:6px;font-size:12px;color:var(--muted);line-height:1.45}
+.btn{
+  border:1px solid var(--border);
+  background:#fff;
+  color:var(--text);
+  padding:10px 12px;border-radius:10px;
+  box-shadow:0 1px 0 rgba(16,24,40,.03);
+  cursor:pointer;
+}
+.btn:hover{background:#fafafa}
+.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:14px 0}
+.card{
+  background:var(--card);
+  border:1px solid var(--border);
+  border-radius:14px;
+  padding:14px;
+  box-shadow:var(--shadow);
+}
+.label{font-size:12px;color:var(--muted)}
+.value{font-size:26px;font-weight:800;margin-top:6px;letter-spacing:-.5px}
+.row{display:grid;grid-template-columns:1.2fr .8fr;gap:12px;margin-top:12px}
+.panel{
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:14px;
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+.panel h2{
+  margin:0;padding:12px 14px;
+  font-size:12px;color:var(--muted);
+  border-bottom:1px solid var(--border);
+  background:#fcfcfc;
+}
+.panel .in{padding:14px}
+input,textarea{
+  width:100%;
+  border:1px solid var(--border);
+  background:#fff;
+  color:var(--text);
+  padding:10px 11px;
+  border-radius:10px;
+  outline:none;
+}
+input:focus,textarea:focus{border-color:rgba(17,24,39,.35)}
+textarea{min-height:130px;resize:vertical}
+.small{font-size:12px;color:var(--muted);margin-top:6px;line-height:1.45}
+hr{border:none;border-top:1px solid var(--border);margin:12px 0}
 table{width:100%;border-collapse:separate;border-spacing:0}
 th,td{padding:10px 12px;text-align:left;font-size:13px}
-th{color:var(--muted);background:rgba(255,255,255,.03);border-bottom:1px solid var(--border)}
+th{color:var(--muted);background:#fcfcfc;border-bottom:1px solid var(--border)}
 tr:not(:last-child) td{border-bottom:1px solid var(--border)}
 .right{text-align:right}
-input,textarea{width:100%;padding:10px 11px;border-radius:12px;border:1px solid var(--border);background:rgba(0,0,0,.25);color:var(--text);outline:none}
-textarea{min-height:120px;resize:vertical}
-.small{font-size:12px;color:var(--muted);margin-top:6px}
-hr{border:none;border-top:1px solid var(--border);margin:12px 0}
-.ok{color:#4ade80;font-size:12px}
-.err{color:#fb7185;font-size:12px}
-@media(max-width:920px){.grid{grid-template-columns:1fr}.row{grid-template-columns:1fr}.right{text-align:left}}
+.ok{color:var(--ok)}
+.err{color:var(--err)}
+.badge{
+  display:inline-flex;align-items:center;gap:8px;
+  font-size:12px;color:var(--muted);
+  padding:6px 10px;border:1px solid var(--border);border-radius:999px;
+  background:#fff;
+}
+.dot{width:8px;height:8px;border-radius:999px;background:var(--ok)}
+@media(max-width:980px){
+  .grid{grid-template-columns:1fr}
+  .row{grid-template-columns:1fr}
+  .right{text-align:left}
+}
 </style>
 </head>
 <body>
@@ -464,59 +527,72 @@ hr{border:none;border-top:1px solid var(--border);margin:12px 0}
   <div class="top">
     <div>
       <h1>Slotpals — Admin</h1>
-      <div class="sub">Stats + Broadcast. Link: <span style="color:var(--accent)">/admin?token=***</span></div>
+      <div class="sub">
+        <span class="badge"><span class="dot"></span> Live</span>
+        <span style="margin-left:10px">Apri: <b>/admin?token=…</b></span>
+      </div>
     </div>
-    <button class="btn" id="refresh">Refresh</button>
+    <button class="btn" id="refresh">Aggiorna</button>
   </div>
 
   <div class="grid">
-    <div class="card"><div class="label">Total users</div><div class="value" id="totalUsers">—</div></div>
-    <div class="card"><div class="label">Active users (24h)</div><div class="value" id="active24">—</div></div>
-    <div class="card"><div class="label">Events (7d)</div><div class="value" id="events7d">—</div></div>
+    <div class="card">
+      <div class="label">Utenti totali</div>
+      <div class="value" id="totalUsers">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Utenti attivi (24h)</div>
+      <div class="value" id="active24">—</div>
+    </div>
+    <div class="card">
+      <div class="label">Eventi (7 giorni)</div>
+      <div class="value" id="events7d">—</div>
+    </div>
   </div>
 
   <div class="row">
     <div class="panel">
-      <h2>Broadcast to all users</h2>
+      <h2>Invia messaggio a tutti (Broadcast)</h2>
       <div class="in">
-        <div class="small">Message supports <b>HTML</b> (e.g. &lt;b&gt;bold&lt;/b&gt;). Keep it short and clean.</div>
-        <textarea id="msg" placeholder="<b>New promo live</b> ..."></textarea>
+        <div class="small">Supporta <b>HTML</b> (es. &lt;b&gt;bold&lt;/b&gt;). Se non inserisci bottoni, non verrà aggiunto alcun link.</div>
+        <textarea id="msg" placeholder="<b>Nuova promo live</b> ..."></textarea>
+
         <div style="height:10px"></div>
-        <input id="img" placeholder="Optional image URL (https://...png/jpg)"/>
-        <div class="small">If image is set, it sends as photo + caption.</div>
+        <input id="img" placeholder="Immagine (opzionale) — URL https://...png/jpg" />
+        <div class="small">Se inserisci un’immagine, il messaggio verrà inviato come foto + caption.</div>
 
         <hr/>
 
-        <div class="small">Button 1 (optional)</div>
-        <input id="b1t" placeholder="Button 1 text (e.g. Play now)"/>
+        <div class="small"><b>Bottone 1</b> (opzionale)</div>
+        <input id="b1t" placeholder="Testo bottone 1 (es. Play now)" />
         <div style="height:8px"></div>
-        <input id="b1u" placeholder="Button 1 URL (https://...)"/>
+        <input id="b1u" placeholder="URL bottone 1 (https://...)" />
 
         <div style="height:10px"></div>
-        <div class="small">Button 2 (optional)</div>
-        <input id="b2t" placeholder="Button 2 text (e.g. Promotions)"/>
+        <div class="small"><b>Bottone 2</b> (opzionale)</div>
+        <input id="b2t" placeholder="Testo bottone 2 (es. Promozioni)" />
         <div style="height:8px"></div>
-        <input id="b2u" placeholder="Button 2 URL (https://...)"/>
+        <input id="b2u" placeholder="URL bottone 2 (https://...)" />
 
         <div style="height:12px"></div>
-        <button class="btn" id="send">Send broadcast</button>
+        <button class="btn" id="send">Invia broadcast</button>
         <div id="status" class="small"></div>
       </div>
     </div>
 
     <div class="panel">
-      <h2>Events (7d)</h2>
+      <h2>Eventi (7 giorni)</h2>
       <div class="in" style="padding:0">
         <table>
-          <thead><tr><th>Event</th><th class="right">Count</th></tr></thead>
+          <thead><tr><th>Evento</th><th class="right">Conteggio</th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
 
-      <h2>Last broadcasts</h2>
+      <h2>Ultimi broadcast</h2>
       <div class="in" style="padding:0">
         <table>
-          <thead><tr><th>When</th><th>Sent</th><th class="right">Fail</th></tr></thead>
+          <thead><tr><th>Quando</th><th>Inviati</th><th class="right">Falliti</th></tr></thead>
           <tbody id="brows"></tbody>
         </table>
       </div>
@@ -539,14 +615,15 @@ async function loadStats(){
   const rows = document.getElementById("rows")
   rows.innerHTML = ""
   const entries = Object.entries(d.eventsLast7d||{}).sort((a,b)=>(b[1]||0)-(a[1]||0))
+  if(!entries.length){
+    const tr=document.createElement("tr")
+    tr.innerHTML="<td colspan='2' style='color:#667085'>Nessun dato</td>"
+    rows.appendChild(tr)
+    return
+  }
   for(const [k,v] of entries){
     const tr=document.createElement("tr")
     tr.innerHTML = "<td>"+k+"</td><td class='right'>"+fmt(v)+"</td>"
-    rows.appendChild(tr)
-  }
-  if(!entries.length){
-    const tr=document.createElement("tr")
-    tr.innerHTML="<td colspan='2' style='color:#93a4c7'>No data yet</td>"
     rows.appendChild(tr)
   }
 }
@@ -557,26 +634,28 @@ async function loadBroadcasts(){
   const rows = document.getElementById("brows")
   rows.innerHTML=""
   const list = (d.broadcasts||[])
+  if(!list.length){
+    const tr=document.createElement("tr")
+    tr.innerHTML="<td colspan='3' style='color:#667085'>Nessun broadcast</td>"
+    rows.appendChild(tr)
+    return
+  }
   for(const b of list){
     const when = new Date(b.created_at).toLocaleString()
     const tr=document.createElement("tr")
     tr.innerHTML="<td>"+when+"</td><td>"+fmt(b.sent_count)+"</td><td class='right'>"+fmt(b.fail_count)+"</td>"
     rows.appendChild(tr)
   }
-  if(!list.length){
-    const tr=document.createElement("tr")
-    tr.innerHTML="<td colspan='3' style='color:#93a4c7'>No broadcasts yet</td>"
-    rows.appendChild(tr)
-  }
 }
 
 async function refreshAll(){ await loadStats(); await loadBroadcasts(); }
+
 document.getElementById("refresh").onclick = refreshAll
 
 document.getElementById("send").onclick = async () => {
   const status = document.getElementById("status")
   status.className="small"
-  status.textContent="Sending..."
+  status.textContent="Invio in corso..."
 
   const payload = {
     message_html: document.getElementById("msg").value,
@@ -593,13 +672,15 @@ document.getElementById("send").onclick = async () => {
     body: JSON.stringify(payload)
   })
   const d = await r.json()
+
   if(!r.ok){
     status.className="small err"
-    status.textContent = "Error: "+(d.error||"unknown")
+    status.textContent = "Errore: " + (d.error || "unknown")
     return
   }
   status.className="small ok"
-  status.textContent = "Done. Sent: "+d.sent+" | Fail: "+d.fail+" | Total: "+d.total
+  status.textContent = "Fatto. Inviati: " + d.sent + " | Falliti: " + d.fail + " | Totale: " + d.total
+
   await refreshAll()
 }
 
