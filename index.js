@@ -737,7 +737,7 @@ tr:not(:last-child) td{border-bottom:1px solid var(--border)}
 <div class="wrap">
   <div class="top">
     <div>
-      <h1>Slotpals — Admin</h1>
+      <h1>Slotpals Admin</h1>
       <div class="sub">Dashboard analytics + broadcast. Consiglio: salva questo link nei preferiti.</div>
     </div>
     <div style="display:flex;gap:10px;align-items:center">
