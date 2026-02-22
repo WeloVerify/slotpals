@@ -1,6 +1,7 @@
 import express from "express"
 import { Telegraf, Markup } from "telegraf"
 import cron from "node-cron"
+import { createClient } from "@supabase/supabase-js"
 
 const bot = new Telegraf(process.env.BOT_TOKEN)
 const app = express()
@@ -12,16 +13,27 @@ const CASINO_URL = process.env.CASINO_URL || "https://8spin.com"
 const SUPPORT_URL = process.env.SUPPORT_URL || "https://8spin.com"
 const ALERT_TIMEZONE = process.env.ALERT_TIMEZONE || "Europe/Rome"
 const REMINDERS_ENABLED = (process.env.REMINDERS_ENABLED || "true").toLowerCase() === "true"
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ""
+const SUPABASE_URL = process.env.SUPABASE_URL
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
 
-// Follow-up image (10 minutes after /start, ONLY if user did NOT click "Play Now")
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  console.warn("⚠️ Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY. DB tracking will fail.")
+}
+
+const supabase = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+  : null
+
+// Follow-up (10 minutes after /start, ONLY if user did NOT click Play Now)
 const FOLLOWUP_IMAGE =
   "https://cdn.prod.website-files.com/696e1363f17d66577979e157/699ae261d7562f0fa01b91dc_Frame%202147224854.png"
 
-// In-memory state (resets on redeploy/restart)
-const subscribers = new Set()        // users who did /start (for reload reminders)
-const playNowClicked = new Set()     // users who clicked Play Now (this session)
-const followupTimers = new Map()     // chatId -> timeoutId
-const followupSent = new Set()       // avoid sending followup multiple times (this session)
+// In-memory state (DB handles analytics; memory handles timing)
+const subscribers = new Set()
+const playNowClicked = new Set()
+const followupTimers = new Map()
+const followupSent = new Set()
 
 const PROMOS = [
   {
@@ -64,6 +76,24 @@ const PROMOS = [
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
+async function track(chatId, event, meta = {}) {
+  if (!supabase || typeof chatId !== "number") return
+  try {
+    await supabase.from("tg_events").insert({ chat_id: chatId, event, meta })
+  } catch {}
+}
+
+async function upsertUser(chatId) {
+  if (!supabase || typeof chatId !== "number") return
+  try {
+    await supabase.from("tg_users").upsert(
+      { chat_id: chatId, last_seen_at: new Date().toISOString() },
+      { onConflict: "chat_id" }
+    )
+    // First seen: handled by default on insert; to keep it simple we don't backfill here.
+  } catch {}
+}
+
 function registerSubscriber(chatId) {
   if (typeof chatId === "number") subscribers.add(chatId)
 }
@@ -83,7 +113,7 @@ function mainMenu() {
   return Markup.inlineKeyboard([
     [Markup.button.callback("🎁 Promotions", "PROMOS")],
     [Markup.button.callback("▶️ Play Now", "PLAY_NOW")],
-    [Markup.button.url("🧑‍💻 Support", SUPPORT_URL)],
+    [Markup.button.callback("🧑‍💻 Support", "OPEN_SUPPORT")],
   ])
 }
 
@@ -95,11 +125,14 @@ async function sendCasinoLink(ctx, introHtml = "<b>Open 8Spin</b> 👇") {
 }
 
 async function sendPromos(ctx) {
+  const chatId = ctx.chat?.id
+  await track(chatId, "promos_view")
+
   await ctx.replyWithHTML(
     "<b>🎁 Current promotions</b>\nPick one below 👇",
     Markup.inlineKeyboard([
       [Markup.button.callback("▶️ Play Now", "PLAY_NOW")],
-      [Markup.button.url("🧑‍💻 Support", SUPPORT_URL)],
+      [Markup.button.callback("🧑‍💻 Support", "OPEN_SUPPORT")],
     ])
   )
 
@@ -109,10 +142,10 @@ async function sendPromos(ctx) {
       parse_mode: "HTML",
       ...Markup.inlineKeyboard([
         [Markup.button.callback("▶️ Play Now", "PLAY_NOW")],
-        [Markup.button.url("🧑‍💻 Support", SUPPORT_URL)],
+        [Markup.button.callback("🧑‍💻 Support", "OPEN_SUPPORT")],
       ]),
     })
-    await sleep(250)
+    await sleep(200)
   }
 }
 
@@ -122,8 +155,9 @@ function scheduleFollowup(chatId) {
   const existing = followupTimers.get(chatId)
   if (existing) clearTimeout(existing)
 
+  track(chatId, "followup_scheduled")
+
   const timeoutId = setTimeout(async () => {
-    // ✅ Only condition: user did NOT click Play Now
     if (playNowClicked.has(chatId)) {
       followupTimers.delete(chatId)
       return
@@ -142,12 +176,13 @@ function scheduleFollowup(chatId) {
         parse_mode: "HTML",
         reply_markup: Markup.inlineKeyboard([
           [Markup.button.callback("▶️ Play Now", "PLAY_NOW")],
-          [Markup.button.url("🧑‍💻 Support", SUPPORT_URL)],
+          [Markup.button.callback("🧑‍💻 Support", "OPEN_SUPPORT")],
         ]).reply_markup,
       })
 
       followupSent.add(chatId)
       followupTimers.delete(chatId)
+      await track(chatId, "followup_sent")
     } catch {
       subscribers.delete(chatId)
       followupTimers.delete(chatId)
@@ -163,24 +198,34 @@ bot.start(async (ctx) => {
   registerSubscriber(chatId)
   scheduleFollowup(chatId)
 
+  await upsertUser(chatId)
+  await track(chatId, "start")
+
   await ctx.reply("Welcome to 8Spin 🤝\nChoose an option:", mainMenu())
 })
 
 bot.command("promos", async (ctx) => sendPromos(ctx))
 
 bot.command("play", async (ctx) => {
-  // /play counts as Play Now
-  markPlayNow(ctx.chat.id)
+  const chatId = ctx.chat.id
+  markPlayNow(chatId)
+  await upsertUser(chatId)
+  await track(chatId, "play_now_click", { source: "command" })
   await sendCasinoLink(ctx, "<b>▶️ Play Now</b>\nTap below to open 8Spin 👇")
 })
 
 bot.command("placeorder", async (ctx) => {
-  // /placeorder counts as Play Now
-  markPlayNow(ctx.chat.id)
+  const chatId = ctx.chat.id
+  markPlayNow(chatId)
+  await upsertUser(chatId)
+  await track(chatId, "play_now_click", { source: "placeorder" })
   await sendCasinoLink(ctx, "<b>🎁 Offer unlocked</b>\nOpen 8Spin to claim it 👇")
 })
 
 bot.command("support", async (ctx) => {
+  const chatId = ctx.chat.id
+  await upsertUser(chatId)
+  await track(chatId, "support_click", { source: "command" })
   await ctx.replyWithHTML(
     "<b>Support</b> 👇",
     Markup.inlineKeyboard([[Markup.button.url("Contact support", SUPPORT_URL)]])
@@ -195,11 +240,25 @@ bot.action("PROMOS", async (ctx) => {
 
 bot.action("PLAY_NOW", async (ctx) => {
   await ctx.answerCbQuery("✅ Let’s go")
-  markPlayNow(ctx.chat.id)
+  const chatId = ctx.chat.id
+  markPlayNow(chatId)
+  await upsertUser(chatId)
+  await track(chatId, "play_now_click", { source: "callback" })
   await sendCasinoLink(ctx, "<b>▶️ Play Now</b>\nOpen 8Spin 👇")
 })
 
-// RELOAD REMINDERS (DM to users who started) — lun/mer/ven
+bot.action("OPEN_SUPPORT", async (ctx) => {
+  await ctx.answerCbQuery()
+  const chatId = ctx.chat.id
+  await upsertUser(chatId)
+  await track(chatId, "support_click", { source: "callback" })
+  await ctx.replyWithHTML(
+    "<b>Need help?</b> Tap below 👇",
+    Markup.inlineKeyboard([[Markup.button.url("Support", SUPPORT_URL)]])
+  )
+})
+
+// RELOAD REMINDERS
 async function sendReloadReminder(kind) {
   if (!REMINDERS_ENABLED) return
   if (!subscribers.size) return
@@ -221,6 +280,7 @@ async function sendReloadReminder(kind) {
   for (const chatId of [...subscribers]) {
     try {
       await bot.telegram.sendMessage(chatId, map[kind], { parse_mode: "HTML", reply_markup })
+      await track(chatId, "reload_reminder_sent", { kind })
       await sleep(120)
     } catch {
       subscribers.delete(chatId)
@@ -228,10 +288,49 @@ async function sendReloadReminder(kind) {
   }
 }
 
-// Cron schedule (10:00 Europe/Rome). Change "10" to your hour.
+// 10:00 Europe/Rome
 cron.schedule("0 10 * * 1", () => sendReloadReminder("monday"), { timezone: ALERT_TIMEZONE })
 cron.schedule("0 10 * * 3", () => sendReloadReminder("wednesday"), { timezone: ALERT_TIMEZONE })
 cron.schedule("0 10 * * 5", () => sendReloadReminder("friday"), { timezone: ALERT_TIMEZONE })
+
+// ADMIN STATS (protected)
+// Call: /admin/stats?token=YOUR_ADMIN_TOKEN
+app.get("/admin/stats", async (req, res) => {
+  if (!ADMIN_TOKEN || req.query.token !== ADMIN_TOKEN) return res.status(401).json({ error: "unauthorized" })
+  if (!supabase) return res.status(500).json({ error: "supabase_not_configured" })
+
+  try {
+    // total users
+    const { count: totalUsers } = await supabase.from("tg_users").select("*", { count: "exact", head: true })
+
+    // last 24h active users (unique chat_id in last 24h)
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+    const { data: last24 } = await supabase
+      .from("tg_events")
+      .select("chat_id")
+      .gte("created_at", since)
+
+    const active24h = new Set((last24 || []).map((r) => r.chat_id)).size
+
+    // counts by event (last 7 days)
+    const since7 = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+    const { data: ev7 } = await supabase
+      .from("tg_events")
+      .select("event")
+      .gte("created_at", since7)
+
+    const byEvent7d = {}
+    for (const r of ev7 || []) byEvent7d[r.event] = (byEvent7d[r.event] || 0) + 1
+
+    res.json({
+      totalUsers: totalUsers || 0,
+      activeUsersLast24h: active24h,
+      eventsLast7d: byEvent7d,
+    })
+  } catch (e) {
+    res.status(500).json({ error: "stats_failed" })
+  }
+})
 
 // HEALTHCHECK + WEBHOOK
 app.get("/", (_, res) => res.send("OK"))
