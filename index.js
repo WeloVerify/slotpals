@@ -9,8 +9,8 @@ app.use(express.json({ limit: "1mb" }))
 
 // ENV
 const WEBHOOK_PATH = process.env.WEBHOOK_PATH || "/telegram/webhook"
-const CASINO_URL = process.env.CASINO_URL || "https://8spin.com"
-const SUPPORT_URL = process.env.SUPPORT_URL || "https://8spin.com"
+const CASINO_URL = process.env.CASINO_URL || "https://wyn.one/tNdPeLoqBB"
+const SUPPORT_URL = process.env.SUPPORT_URL || "https://wyn.one/tNdPeLoqBB"
 const ALERT_TIMEZONE = process.env.ALERT_TIMEZONE || "Europe/Rome"
 const REMINDERS_ENABLED = (process.env.REMINDERS_ENABLED || "true").toLowerCase() === "true"
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ""
